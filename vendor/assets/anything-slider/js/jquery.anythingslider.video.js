@@ -1,5 +1,5 @@
-/*
- * AnythingSlider Video Controller 1.0 beta for AnythingSlider v1.6+
+﻿/*
+ * AnythingSlider Video Controller 1.3.1 beta for AnythingSlider v1.6+
  * By Rob Garrison (aka Mottie & Fudgey)
  * Dual licensed under the MIT and GPL licenses.
  */
@@ -16,10 +16,13 @@
 			var video, tmp, service, sel, base = $(this).data('AnythingSlider');
 			if (!base) { return; }
 			video = base.video = {};
+			// Next update, I may just force users to call the video extension instead of it auto-running on window load
+			// then they can change the video options in that call instead of the base defaults, and maybe prevent the
+			// videos being initialized twice on startup (once as a regular video and second time with the API string)
 			video.options = $.extend({}, defaults, options);
 
 			// check if SWFObject is loaded
-			video.hasSwfo = (typeof(swfobject) !== 'undefined' && swfobject.hasOwnProperty('embedSWF') && typeof(swfobject.embedSWF) === 'function') ? true : false;
+			video.hasSwfo = (typeof(swfobject) !== 'undefined' && swfobject.hasOwnProperty('embedSWF') && typeof(swfobject.embedSWF) === 'function' && swfobject.hasFlashPlayerVersion('1'));
 
 			video.list = {};
 			video.hasVid = false;
@@ -115,6 +118,7 @@
 			};
 
 			// receive message from iframe
+			// no way to figure out which iframe since the message is from the window
 			video.message = function(e){
 				if (e.data) {
 					if (/infoDelivery/g.test(e.data)) { return; } // ignore youtube video loading spam
@@ -221,7 +225,7 @@ $.fn.anythingSliderVideo.services = {
 		selector : 'iframe[src*=vimeo]',
 		initAPI : '&api=1&player_id=', // video ID added to the end
 		cont : function(base, vid, index){
-			if (base.video.list[index].status === 'pause'){
+			if (base.options.resumeOnVisible && base.video.list[index].status === 'pause'){
 				// Commands sent to the iframe originally had "JSON.stringify" applied to them,
 				// but not all browsers support this, so it's just as easy to wrap it in quotes.
 				base.video.postMsg('{"method":"play"}', vid);
@@ -260,10 +264,12 @@ $.fn.anythingSliderVideo.services = {
 		selector : 'object[data-url*=vimeo], embed[src*=vimeo]',
 		embedOpts : { flashvars : { api : 1 } },
 		cont : function(base, vid, index) {
-			var $vid = $('#' + vid);
-			// continue video if previously played & not finished (api_finish doesn't seem to exist) - duration can be a decimal number, so subtract it and look at the difference (2 seconds here)
-			if (typeof($vid[0].api_play) === 'function' && $vid[0].api_paused() && $vid[0].api_getCurrentTime() !== 0 && ($vid[0].api_getDuration() - $vid[0].api_getCurrentTime()) > 2) {
-				$vid[0].api_play();
+			if (base.options.resumeOnVisible) {
+				var $vid = $('#' + vid);
+				// continue video if previously played & not finished (api_finish doesn't seem to exist) - duration can be a decimal number, so subtract it and look at the difference (2 seconds here)
+				if (typeof($vid[0].api_play) === 'function' && $vid[0].api_paused() && $vid[0].api_getCurrentTime() !== 0 && ($vid[0].api_getDuration() - $vid[0].api_getCurrentTime()) > 2) {
+					$vid[0].api_play();
+				}
 			}
 		},
 		pause : function(base, vid){
@@ -287,7 +293,7 @@ $.fn.anythingSliderVideo.services = {
 		// "iv_load_policy=3" should turn off annotations on init, but doesn't seem to
 		initAPI : '&iv_load_policy=3&enablejsapi=1&playerapiid=',
 		cont : function(base, vid, index){
-			if (base.video.list[index].status === 2){
+			if (base.options.resumeOnVisible && base.video.list[index].status === 2){
 				base.video.postMsg('{"event":"command","func":"playVideo"}', vid);
 			}
 		},
@@ -306,17 +312,21 @@ $.fn.anythingSliderVideo.services = {
 				// figure out vid for youtube
 				// data.info.videoURL = http://www.youtube.com/watch?v=###########&feature=player_embedded
 				var url = base.video.gup('v', data.info.videoUrl), // end up with ###########, now find it
-					vid = $('iframe[src*=' + url + ']')[0].id,
-					index = vid.replace(base.video.options.videoID, '');
-				// YouTube ready, add additional event listeners for video status. BUT this never fires off =(
-				// Fixing this may solve the continue problem
-				if (data.event === 'onReady') {
-					base.video.postMsg('{"event":"listening","func":"onStateChange"}', vid); // **** FIX: NEED TO DETERMINE VID ***
-				}
-				// Update status, so the "isPlaying" function can access it
-				if (data.event === 'onStateChange' && base.video.list[index]) {
-					// update list with current status; data.state = YouTube
-					base.video.list[index].status = data.state;
+					v = $('iframe[src*=' + url + ']'), vid, index;
+					// iframe src changes when watching related videos; so there is no way to tell which video has an update
+					if (v.length) {
+						vid = v[0].id;
+						index = vid.replace(base.video.options.videoID, '');
+					// YouTube ready, add additional event listeners for video status. BUT this never fires off =(
+					// Fixing this may solve the continue problem
+					if (data.event === 'onReady') {
+						base.video.postMsg('{"event":"listening","func":"onStateChange"}', vid);
+					}
+					// Update status, so the "isPlaying" function can access it
+					if (data.event === 'onStateChange' && base.video.list[index]) {
+						// update list with current status; data.info.playerState = YouTube
+						base.video.list[index].status = data.info.playerState;
+					}
 				}
 			}
 		},
@@ -334,10 +344,12 @@ $.fn.anythingSliderVideo.services = {
 		initAPI : '&iv_load_policy=3&enablejsapi=1&version=3&playerapiid=', // video ID added to the end
 		// YouTube - player states: unstarted (-1), ended (0), playing (1), paused (2), buffering (3), video cued (5).
 		cont : function(base, vid, index) {
-			var $vid = $('#' + vid);
-			// continue video if previously played and not cued
-			if ($vid.length && typeof($vid[0].getPlayerState) === 'function' && $vid[0].getPlayerState() > 0) {
-				$vid[0].playVideo();
+			if (base.options.resumeOnVisible) {
+				var $vid = $('#' + vid);
+				// continue video if previously played and not cued
+				if ($vid.length && typeof($vid[0].getPlayerState) === 'function' && $vid[0].getPlayerState() > 0) {
+					$vid[0].playVideo();
+				}
 			}
 		},
 		pause : function(base, vid){
